@@ -1,0 +1,18 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: niyam
+      POSTGRES_PASSWORD: niyam # local development only; set DATABASE_URL for anything else
+      POSTGRES_DB: niyam
+    ports:
+      - "5433:5432" # 5433 so it never clashes with another local Postgres
+    volumes:
+      - niyam-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U niyam -d niyam"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  niyam-pg:
