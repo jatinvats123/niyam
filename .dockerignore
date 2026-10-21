@@ -1,0 +1,11 @@
+.venv
+.git
+.github
+.pytest_cache
+**/__pycache__
+*.egg-info
+.env
+data/raw
+data/processed/ocr
+data/processed/emb-potion-*
+tests
