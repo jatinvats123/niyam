@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Niyam: GST answers with citations</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b6760; --line: #e3dfd6; --card: #fff; --accent: #0f6b5c; --mark: #fff3c4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --fg: #ecebe7; --muted: #a29e95; --line: #34322e; --card: #1f1e1c; --accent: #5cc4ae; --mark: #4a3f14; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, "Noto Sans Devanagari", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { margin: 0; font-size: 1.6rem; } h1 span { color: var(--muted); font-weight: 400; }
+  p.lede { color: var(--muted); margin: 4px 0 20px; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); font: inherit; }
+  button { padding: 10px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .examples { margin: 10px 0 0; font-size: .9rem; color: var(--muted); }
+  .examples a { color: var(--accent); cursor: pointer; margin-right: 12px; }
+  #answer { margin: 28px 0 8px; white-space: pre-wrap; min-height: 1.5em; }
+  #answer a.cite { color: var(--accent); text-decoration: none; font-weight: 600; font-size: .85em; vertical-align: super; }
+  #status { color: var(--muted); font-size: .9rem; }
+  h2 { font-size: 1rem; margin: 28px 0 8px; color: var(--muted); font-weight: 600; }
+  .source { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .source.cited { border-color: var(--accent); }
+  .source.flash { background: var(--mark); }
+  .source header { display: flex; justify-content: space-between; gap: 12px; font-size: .9rem; }
+  .source header a { color: var(--accent); white-space: nowrap; }
+  .source .subject { color: var(--muted); font-size: .85rem; margin: 2px 0 6px; }
+  .source .text { font-size: .9rem; max-height: 7.5em; overflow: hidden; }
+  .source.open .text { max-height: none; }
+  .source .more { background: none; color: var(--accent); padding: 0; font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Niyam <span>नियम</span></h1>
+  <p class="lede">Ask a GST question in English, Hindi or Hinglish. Answers come only from the 272 official CBIC circulars, with a citation for every claim.</p>
+  <form id="ask">
+    <input id="q" name="q" placeholder="e.g. Can I claim ITC on demo vehicles?" required minlength="3" maxlength="500" autocomplete="off">
+    <button id="go">Ask</button>
+  </form>
+  <div class="examples">Try:
+    <a>Is GST payable on gift vouchers?</a>
+    <a>क्या डेमो गाड़ियों पर इनपुट टैक्स क्रेडिट मिलता है?</a>
+    <a>GSTR-9C late file karne par late fee lagti hai kya?</a>
+  </div>
+  <div id="answer"></div>
+  <div id="status"></div>
+  <section id="sources-wrap" hidden><h2>Sources</h2><div id="sources"></div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let answerText = "";
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderAnswer() {
+  $("answer").innerHTML = escapeHtml(answerText).replace(/\[(\d+)\]/g,
+    (m, n) => document.getElementById("s" + n) ? `<a class="cite" href="#s${n}" data-n="${n}">[${n}]</a>` : m);
+}
+
+function renderSources(sources) {
+  $("sources-wrap").hidden = sources.length === 0;
+  $("sources").innerHTML = sources.map((s) => {
+    const page = (s.pages.match(/\d+/) || ["1"])[0];
+    return `<article class="source" id="s${s.n}">
+      <header><strong>[${s.n}] Circular ${escapeHtml(s.circular)} · ${escapeHtml(s.date)} · ${escapeHtml(s.pages)}</strong>
+      <a href="${s.pdf}#page=${page}" target="_blank" rel="noopener">PDF ↗</a></header>
+      <div class="subject">${escapeHtml(s.subject)}</div>
+      <div class="text">${escapeHtml(s.text)}</div>
+      <button class="more" type="button">Show more</button></article>`;
+  }).join("");
+}
+
+// /ask is a POST that streams Server-Sent Events, so read the body stream instead of using EventSource.
+async function ask(question) {
+  answerText = ""; renderAnswer(); renderSources([]);
+  $("status").textContent = "Searching the circulars…"; $("go").disabled = true;
+  try {
+    const response = await fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json" },
+                                           body: JSON.stringify({ question }) });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${response.status}`);
+    }
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let end;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+        const event = block.match(/^event: (.*)$/m)[1], data = JSON.parse(block.match(/^data: (.*)$/m)[1]);
+        handle(event, data);
+      }
+    }
+  } catch (err) {
+    $("status").textContent = "Request failed: " + err.message;
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+function handle(event, data) {
+  if (event === "sources") { renderSources(data); $("status").textContent = "Writing the answer…"; }
+  else if (event === "token") { answerText += data.text; renderAnswer(); }
+  else if (event === "retry") { answerText = ""; renderAnswer(); $("status").textContent = "Self-check found an unsupported sentence; rewriting the answer…"; }
+  else if (event === "error") { $("status").textContent = data.message; }
+  else if (event === "done") {
+    data.cited.forEach((n) => $("s" + n)?.classList.add("cited"));
+    $("status").textContent = data.cited.length ? `Cited ${data.cited.length} passage(s).` : "";
+  }
+}
+
+$("ask").addEventListener("submit", (e) => { e.preventDefault(); ask($("q").value.trim()); });
+document.querySelectorAll(".examples a").forEach((a) => a.addEventListener("click", () => { $("q").value = a.textContent; ask(a.textContent); }));
+document.addEventListener("click", (e) => {
+  if (e.target.matches("a.cite")) {
+    const card = $("s" + e.target.dataset.n);
+    card.classList.add("flash", "open"); setTimeout(() => card.classList.remove("flash"), 1200);
+  } else if (e.target.matches(".source .more")) {
+    const card = e.target.closest(".source");
+    card.classList.toggle("open"); e.target.textContent = card.classList.contains("open") ? "Show less" : "Show more";
+  }
+});
+</script>
+</body>
+</html>
