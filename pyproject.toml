@@ -1,0 +1,38 @@
+[project]
+name = "niyam"
+version = "0.1.0"
+description = "Hindi/English assistant that answers GST questions from official CBIC circulars, with citations"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+    "truststore>=0.10",
+    "pymupdf>=1.26",
+    "fastembed>=0.9",
+    "bm25s>=0.2",
+    "rapidocr>=3",
+    "psycopg[binary]>=3.3",
+    "pgvector>=0.5",
+    "fastapi>=0.120",
+    "uvicorn>=0.38",
+    "python-dotenv>=1.1",
+    "google-genai>=1.30",
+    "langgraph>=1.0",
+    "mcp>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["niyam"]
+
+[tool.setuptools.package-data]
+niyam = ["static/*"]
+
+[project.scripts]
+niyam-mcp = "niyam.mcp_server:main"

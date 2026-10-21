@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+data/raw/pdf/
+# Derived data stays out of git, except the passages CI evaluates against.
+data/processed/*
+!data/processed/chunks.jsonl
+.cache/
+# Raw API dump and download log: reproducible with scripts/download_circulars.py
+data/raw/circulars.json
+*.log
