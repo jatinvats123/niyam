@@ -19,8 +19,9 @@ question.
 
 ## Try it
 
-- **Online**: https://huggingface.co/spaces/jatinvats123/niyam (a Hugging Face Space, search only until a
-  Gemini key is added; see [Hugging Face Space](#hugging-face-space)).
+- **Online**: https://huggingface.co/spaces/jatinvats123/niyam shows saved results from real searches for 12
+  questions (English, Hindi, Hinglish), each with the top 3 passages and links to the official PDFs. It is a free
+  static Space; the live app needs the Docker Space in [Hugging Face Space](#hugging-face-space), which needs a paid plan.
 - **Locally, no API key needed**: `pip install -e .`, then `NIYAM_INDEX=file uvicorn niyam.api:app` and
   open http://localhost:8000. The first start downloads the e5 model (2.1 GB).
 
