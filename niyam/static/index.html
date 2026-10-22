@@ -14,6 +14,9 @@
   main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
   h1 { margin: 0; font-size: 1.6rem; } h1 span { color: var(--muted); font-weight: 400; }
   p.lede { color: var(--muted); margin: 4px 0 20px; }
+  .mode { display: inline-block; margin: 6px 0 0; padding: 1px 10px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: .8rem; font-weight: 600; }
+  .mode[hidden] { display: none; }
+  .notice { white-space: normal; border-left: 3px solid var(--accent); background: var(--card); padding: 8px 12px; border-radius: 0 8px 8px 0; font-size: .95rem; }
   form { display: flex; gap: 8px; }
   input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); font: inherit; }
   button { padding: 10px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
@@ -38,7 +41,8 @@
 <body>
 <main>
   <h1>Niyam <span>नियम</span></h1>
-  <p class="lede">Ask a GST question in English, Hindi or Hinglish. Answers come only from the 272 official CBIC circulars, with a citation for every claim.</p>
+  <p id="mode" class="mode" hidden>Search only (no AI answer)</p>
+  <p class="lede" id="lede">Ask a GST question in English, Hindi or Hinglish. Answers come only from the 272 official CBIC circulars, with a citation for every claim.</p>
   <form id="ask">
     <input id="q" name="q" placeholder="e.g. Can I claim ITC on demo vehicles?" required minlength="3" maxlength="500" autocomplete="off">
     <button id="go">Ask</button>
@@ -54,7 +58,14 @@
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-let answerText = "";
+let answerText = "", searchOnly = false;
+
+// Without an LLM key the server is search-only: it returns the best passages, not a written answer.
+function setSearchOnly(on) {
+  searchOnly = on; $("mode").hidden = !on; $("go").textContent = on ? "Search" : "Ask";
+  if (on) $("lede").textContent = "Ask a GST question in English, Hindi or Hinglish. This demo runs without an AI key, so it shows the passages from the 272 official CBIC circulars that best match your question, each linked to the official PDF.";
+}
+fetch("/health").then((r) => r.json()).then((h) => setSearchOnly(h.mode === "search_only")).catch(() => {});
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -69,9 +80,11 @@ function renderSources(sources) {
   $("sources-wrap").hidden = sources.length === 0;
   $("sources").innerHTML = sources.map((s) => {
     const page = (s.pages.match(/\d+/) || ["1"])[0];
+    const link = s.cbic_url ? `<a href="${escapeHtml(s.cbic_url)}" target="_blank" rel="noopener">CBIC PDF ↗</a>`
+                            : `<a href="${s.pdf}#page=${page}" target="_blank" rel="noopener">PDF ↗</a>`;
     return `<article class="source" id="s${s.n}">
       <header><strong>[${s.n}] Circular ${escapeHtml(s.circular)} · ${escapeHtml(s.date)} · ${escapeHtml(s.pages)}</strong>
-      <a href="${s.pdf}#page=${page}" target="_blank" rel="noopener">PDF ↗</a></header>
+      ${link}</header>
       <div class="subject">${escapeHtml(s.subject)}</div>
       <div class="text">${escapeHtml(s.text)}</div>
       <button class="more" type="button">Show more</button></article>`;
@@ -110,10 +123,16 @@ async function ask(question) {
 }
 
 function handle(event, data) {
-  if (event === "sources") { renderSources(data); $("status").textContent = "Writing the answer…"; }
+  if (event === "sources") { renderSources(data); $("status").textContent = searchOnly ? "" : "Writing the answer…"; }
   else if (event === "token") { answerText += data.text; renderAnswer(); }
   else if (event === "retry") { answerText = ""; renderAnswer(); $("status").textContent = "Self-check found an unsupported sentence; rewriting the answer…"; }
   else if (event === "error") { $("status").textContent = data.message; }
+  else if (event === "done" && data.mode === "search_only") {
+    setSearchOnly(true);
+    const count = document.querySelectorAll(".source").length;
+    $("answer").innerHTML = count ? `<div class="notice"><strong>Search only (no AI answer).</strong> The ${count} passages below match your question best, best first. Each links to its circular on the CBIC portal.</div>` : "";
+    $("status").textContent = count ? "" : "No matching passages found.";
+  }
   else if (event === "done") {
     data.cited.forEach((n) => $("s" + n)?.classList.add("cited"));
     $("status").textContent = data.cited.length ? `Cited ${data.cited.length} passage(s).` : "";
