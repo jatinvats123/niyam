@@ -113,7 +113,7 @@ async def lifespan(_: FastAPI):
     load_dotenv(ROOT / ".env")
     get_rate_limiter()  # a malformed NIYAM_ASK_RATE_LIMIT fails at start-up, not on the first question
     if os.environ.get("NIYAM_PRELOAD") == "1":  # load e5 and the passages before serving, not on the first query
-        get_retriever()
+        get_retriever().search("GST", 1)  # one query too: the model's first inference is the slow one
     yield
 
 
