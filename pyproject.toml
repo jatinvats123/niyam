@@ -36,3 +36,7 @@ niyam = ["static/*"]
 
 [project.scripts]
 niyam-mcp = "niyam.mcp_server:main"
+
+[tool.pytest.ini_options]
+# tests/test_mcp.py imports shared fakes from tests/test_graph.py.
+pythonpath = ["."]
