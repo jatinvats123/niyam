@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import bm25s
@@ -22,6 +23,8 @@ from niyam.ingest import Chunk
 ROOT = Path(__file__).resolve().parents[1]
 CHUNKS_FILE = ROOT / "data" / "processed" / "chunks.jsonl"
 CACHE_DIR = ROOT / "data" / "processed"
+# Passages and their normalised e5 vectors in one file (scripts/export_index.py): NIYAM_INDEX=file serves from it.
+INDEX_FILE = ROOT / "data" / "index" / "e5-passages.npz"
 
 # key -> (fastembed model name, query prefix, passage prefix). E5 models are trained with these prefixes.
 EMBEDDERS = {
@@ -60,19 +63,29 @@ class BM25Index:
 
 
 class DenseIndex:
-    def __init__(self, chunks: list[Chunk], key: str = "e5"):
+    def __init__(self, chunks: list[Chunk], key: str = "e5", vectors: np.ndarray | None = None,
+                 model: TextEmbedding | None = None):
+        """Embeds the passages (cached on disk), unless `vectors` already holds their normalised embeddings."""
         model_name, self.query_prefix, passage_prefix = EMBEDDERS[key]
         self.chunks = chunks
-        self.model = TextEmbedding(model_name)
-        digest = hashlib.sha1("".join(c.chunk_id for c in chunks).encode()).hexdigest()[:10]
-        cache = CACHE_DIR / f"emb-{key}-{digest}.npy"
-        if cache.exists():
-            self.vectors = np.load(cache)
-        else:
-            texts = [passage_prefix + c.embedding_text() for c in chunks]
-            self.vectors = np.array(list(self.model.embed(texts, batch_size=16)), dtype=np.float32)
-            np.save(cache, self.vectors)
-        self.vectors /= np.linalg.norm(self.vectors, axis=1, keepdims=True)
+        self.model = model if model is not None else TextEmbedding(model_name)
+        if vectors is None:
+            digest = hashlib.sha1("".join(c.chunk_id for c in chunks).encode()).hexdigest()[:10]
+            cache = CACHE_DIR / f"emb-{key}-{digest}.npy"
+            if cache.exists():
+                vectors = np.load(cache)
+            else:
+                texts = [passage_prefix + c.embedding_text() for c in chunks]
+                vectors = np.array(list(self.model.embed(texts, batch_size=16)), dtype=np.float32)
+                np.save(cache, vectors)
+            vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        self.vectors = vectors
+
+    @classmethod
+    def from_file(cls, path: Path = INDEX_FILE, model: TextEmbedding | None = None) -> DenseIndex:
+        """The exported index: no Postgres, and no embedding pass over the passages at start-up."""
+        key, chunks, vectors = read_index(path)
+        return cls(chunks, key, vectors, model)
 
     def embed_query(self, query: str) -> np.ndarray:
         q = np.array(next(iter(self.model.embed([self.query_prefix + query]))), dtype=np.float32)
@@ -82,6 +95,22 @@ class DenseIndex:
         sims = self.vectors @ self.embed_query(query)
         top = np.argsort(-sims)[:k]
         return [Hit(self.chunks[i], float(sims[i])) for i in top]
+
+
+def write_index(path: Path, chunks: list[Chunk], vectors: np.ndarray, key: str = "e5") -> None:
+    """Save passages and their normalised vectors as one compressed .npz (plain arrays, no pickle)."""
+    meta = json.dumps({"embedder": key, "model": EMBEDDERS[key][0], "chunks": [asdict(c) for c in chunks]},
+                      ensure_ascii=False).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, vectors=vectors.astype(np.float32), meta=np.frombuffer(meta, dtype=np.uint8))
+
+
+def read_index(path: Path = INDEX_FILE) -> tuple[str, list[Chunk], np.ndarray]:
+    """(embedder key, passages, vectors) from a file written by `write_index`. Needs numpy only, no model."""
+    with np.load(path, allow_pickle=False) as data:
+        meta = json.loads(data["meta"].tobytes().decode("utf-8"))
+        vectors = data["vectors"]
+    return meta["embedder"], [Chunk(**c) for c in meta["chunks"]], vectors
 
 
 def reciprocal_rank_fusion(*rankings: list[Hit], k: int = 50) -> list[Hit]:
@@ -112,10 +141,20 @@ class Retriever:
 
     On the 45 answerable eval questions it beats BM25 + e5 fusion (R@1 0.96 vs 0.93) and every reranker
     tried, which either tied it at 50x the latency or lowered R@1 (see DESIGN.md, "Retrieval set-up").
+
+    NIYAM_INDEX picks where the passage vectors come from: unset (or "memory") embeds data/processed/chunks.jsonl
+    on first start and caches the result; "file" loads the exported data/index/e5-passages.npz instead.
+    Both rank with the same numpy cosine similarity.
     """
 
     def __init__(self, chunks: list[Chunk] | None = None):
-        self.dense = DenseIndex(chunks if chunks is not None else load_chunks(), "e5")
+        backend = os.environ.get("NIYAM_INDEX", "").strip().lower() or "memory"
+        if backend == "file":
+            self.dense = DenseIndex.from_file()
+        elif backend == "memory":
+            self.dense = DenseIndex(chunks if chunks is not None else load_chunks(), "e5")
+        else:
+            raise ValueError(f"NIYAM_INDEX must be 'memory' or 'file', not {backend!r}")
 
     def search(self, query: str, k: int = 6) -> list[Hit]:
         return self.dense.search(query, k)

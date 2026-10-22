@@ -8,6 +8,7 @@ Usage:
     python scripts/eval_retrieval.py                          # all set-ups
     python scripts/eval_retrieval.py --configs bm25 --gate    # fail if worse than data/eval/baseline.json
     python scripts/eval_retrieval.py --save-baseline          # record current numbers as the baseline
+    python scripts/eval_retrieval.py --configs e5,pg-e5,file  # in memory vs Postgres vs the exported index file
 """
 
 from __future__ import annotations
@@ -18,8 +19,8 @@ import re
 import time
 from pathlib import Path
 
-from niyam.search import (MINILM_RERANKER, RERANKER, BM25Index, DenseIndex, Reranker, circular_ranking, load_chunks,
-                          reciprocal_rank_fusion)
+from niyam.search import (INDEX_FILE, MINILM_RERANKER, RERANKER, BM25Index, DenseIndex, Reranker, circular_ranking,
+                          load_chunks, reciprocal_rank_fusion)
 
 ROOT = Path(__file__).resolve().parents[1]
 QUESTIONS = ROOT / "data" / "eval" / "questions.jsonl"
@@ -53,6 +54,8 @@ def main() -> int:
     bm25 = BM25Index(chunks)
     dense = {key: DenseIndex(chunks, key) for key in ("potion", "e5")
              if any(key in c for c in configs) or (key == "e5" and any("hybrid" in c or "pg-" in c for c in configs))}
+    if any(c.split("+", 1)[0] == "file" for c in configs):  # the exported index (NIYAM_INDEX=file)
+        dense["file"] = DenseIndex.from_file(INDEX_FILE, model=dense["e5"].model if "e5" in dense else None)
     # "+rerank" reranks the top 30 with bge-reranker-v2-m3; "+rerank8" only the top 8;
     # "+minilm8" the top 8 with the small English MiniLM cross-encoder.
     rerankers = {name: Reranker(model) for name, model in (("rerank", RERANKER), ("minilm", MINILM_RERANKER))

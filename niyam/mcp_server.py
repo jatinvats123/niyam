@@ -60,7 +60,11 @@ def ask(question: str) -> Answer:
     Returns the answer, the passage numbers it cites, and the passages. The answer is self-checked
     against its sources and regenerated once if a sentence isn't supported.
     """
-    state = AnswerFlow(get_retriever(), get_generator()).run(question)
+    generator = get_generator()
+    if generator is None:
+        raise RuntimeError("GEMINI_API_KEY is not set; add it to .env (see .env.example). "
+                           "search_circulars works without it.")
+    state = AnswerFlow(get_retriever(), generator).run(question)
     hits = state.get("hits", [])
     if not hits:
         return {"answer": NOT_FOUND, "cited": [], "sources": []}

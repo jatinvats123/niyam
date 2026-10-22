@@ -19,6 +19,8 @@ import truststore
 
 BASE_URL = "https://taxinformation.cbic.gov.in/api/cbic-circular-msts"
 GST_TAX_ID = 1000001  # the portal's id for GST
+# The portal's own viewer for one circular's PDF: what its "view" button opens in a new tab.
+VIEW_URL = "https://taxinformation.cbic.gov.in/view-pdf/{id}/ENG/Circulars"
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "User-Agent": "Mozilla/5.0 (compatible; niyam/0.1; GST circular research project)",
@@ -59,6 +61,11 @@ class Circular:
             file_name=row.get("docFileName") or "",
             has_hindi=bool(row.get("docFilePathHi")),
         )
+
+
+def view_url(circular_id: int) -> str:
+    """Public link to the official PDF of a circular, by its portal id (the `id` in data/raw/circulars.jsonl)."""
+    return VIEW_URL.format(id=circular_id)
 
 
 def list_circulars(client: httpx.Client, tax_id: int = GST_TAX_ID) -> list[dict]:

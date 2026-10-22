@@ -30,7 +30,8 @@ jobs:
             data/processed/emb-*.npy
           key: models-${{ hashFiles('data/processed/chunks.jsonl') }}
           restore-keys: models-
-      - run: python scripts/eval_retrieval.py --configs bm25,e5,hybrid --gate
+      # "file" is the exported index the Space serves (NIYAM_INDEX=file); it must match e5 in memory.
+      - run: python scripts/eval_retrieval.py --configs bm25,e5,hybrid,file --gate
 
   answers:
     runs-on: ubuntu-latest
