@@ -200,3 +200,42 @@ blob in the same layer, cut the model layer to 2.25 GB (Docker Desktop reports 4
 e5), later ones 0.3 s including HTTP; memory is 2.6 GB after the model loads. Not deployed: that rules
 out the free tiers of most hosts. Rejected for now: loading the model at start-up, which would only move
 the 20 s into the health check.
+
+## Public demo
+
+**Search only without an LLM key, instead of a 503.** A visitor with no key should still get something
+useful. `/ask` then streams `sources` (the best passages, each with a `cbic_url`) and `done` with
+`"mode": "search_only"`, and no tokens. The UI reads the mode from `/health` on load, labels the page and
+the results "Search only (no AI answer)", and links each passage to the official PDF. Hindi and Hinglish
+questions are searched as typed, since the rewrite needs the LLM; e5 alone already has Hindi R@5 1.00 on the
+eval. With a key nothing changes: the `/ask` events and payloads are the same as before.
+
+**Official PDF links through the portal's own viewer.** The portal has no static PDF URLs (its API returns
+the PDF as base64 JSON), but its "view" button opens `view-pdf/<id>/ENG/Circulars` in a new tab. That deep
+link opened the right circular for the newest (2026) and the oldest (2017) circular tried.
+`/circulars/<id>/pdf` serves the local PDF if it was downloaded and otherwise redirects there, so PDF links
+also work in a container without the PDFs.
+
+**An exported index file instead of Postgres.** `scripts/export_index.py` writes the 1,697 passages and their
+normalised e5 vectors to one `.npz` (7.0 MB: float32 vectors, metadata as UTF-8 JSON, no pickle). With
+`NIYAM_INDEX=file` the API loads it and ranks with the same numpy dot product as the in-memory index, so a
+container needs no database and no embedding pass over the passages; only the query is embedded. Measured
+against pgvector on 22 Oct 2026: identical vectors (largest difference 0), identical metrics (R@1 0.9556,
+R@5 1.0000, MRR 0.9778 for in-memory, pgvector and the file), and on all 45 questions the same first
+relevant circular, top 5 circulars and top 10 passages. Rejected: float16 vectors, which would halve the
+file but can reorder near-ties. A unit test checks that the committed file matches `chunks.jsonl`, and the
+weekly eval gates the `file` set-up.
+
+**The Space builds from GitHub.** The Space's git repo holds two text files, its `README.md` (Space
+settings) and a `Dockerfile` that downloads this repository at build time (`NIYAM_REF`, default `main`).
+The Space then never needs git-xet for the 7 MB index file or the screenshot, it always builds the
+reviewed `main`, and the GitHub README carries no Space front matter. The Dockerfile reuses the main image's
+size fixes, runs as uid 1000 as Spaces require, listens on 7860, and sets `NIYAM_PRELOAD=1` so the model
+loads before the server takes requests: a visitor waits on the Space's start-up screen rather than on a
+first search that seems to hang, and two first requests can't load the model twice.
+
+**Per-client rate limit on `/ask`, in memory.** `NIYAM_ASK_RATE_LIMIT` (the Space sets `10/minute,100/day`)
+keeps a sliding window of request times per client address and answers 429 with `Retry-After` when a
+window is full. The Space runs uvicorn with `--proxy-headers`, so the address is the left-most
+`X-Forwarded-For` entry. A client can forge that header, so the limit stops casual overuse of a Gemini
+quota, not a determined abuser. One process means no shared store is needed; a restart clears the counts.

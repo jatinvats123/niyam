@@ -15,6 +15,19 @@ question.
 - **MCP server** so Claude Desktop or Cursor can search the circulars and ask questions.
 - **Web UI**: one static page with clickable citations that open the original PDF at the cited page.
 - **Evals in CI**: a 50-question hand-labelled set gates retrieval on every push.
+- **Works without an API key**: search only (no AI answer), returning the best passages with citations.
+
+## Try it
+
+- **Online**: https://huggingface.co/spaces/jatinvats123/niyam (a Hugging Face Space, search only until a
+  Gemini key is added; see [Hugging Face Space](#hugging-face-space)).
+- **Locally, no API key needed**: `pip install -e .`, then `NIYAM_INDEX=file uvicorn niyam.api:app` and
+  open http://localhost:8000. The first start downloads the e5 model (2.1 GB).
+
+![Niyam in search-only mode: the Hinglish question "Gift voucher bechne par GST lagta hai kya?" returns passages from circular 243/37/2024-GST on vouchers, each with date, pages, subject and a link to the CBIC PDF](docs/search-only.png)
+
+*Search only (no AI answer), screenshot of a local run: a Hinglish question finds the 2024 circular on
+vouchers without any LLM.*
 
 ## Architecture
 
@@ -25,7 +38,7 @@ flowchart LR
         B --> C["Numbered-paragraph chunks<br/>1,697 passages"]
         C --> D["multilingual-e5-large<br/>embeddings"]
     end
-    D --> M[("In-memory index")]
+    D --> M[("In-memory index<br/>or exported .npz file")]
     D -.->|optional| P[("Postgres<br/>pgvector + full-text")]
 
     subgraph Flow["Answer flow (LangGraph)"]
@@ -62,24 +75,40 @@ Dense multilingual retrieval alone won. Hybrid search and the MiniLM reranker lo
 reranker only matched e5 at about 54x the latency. So the production path has neither. Full table and
 reasoning in [DESIGN.md](DESIGN.md#retrieval-set-up).
 
+The demo serves search from an exported index file instead of Postgres (`NIYAM_INDEX=file`: the 1,697
+passages and their e5 vectors, 7.0 MB). It reproduces pgvector exactly: the stored vectors are identical
+(largest difference 0), and on all 45 questions the file, pgvector and the in-memory index return the same
+first relevant circular, the same top 5 circulars and the same top 10 passages.
+
+| Back-end (one run, 22 Oct 2026) | R@1 | R@3 | R@5 | MRR | Hindi R@5 | ms/query |
+|---|---|---|---|---|---|---|
+| e5, embedded in memory (default) | 0.96 | 1.00 | 1.00 | 0.98 | 1.00 | 156 |
+| Postgres pgvector (HNSW) | 0.96 | 1.00 | 1.00 | 0.98 | 1.00 | 168 |
+| e5, exported file + numpy (`NIYAM_INDEX=file`) | 0.96 | 1.00 | 1.00 | 0.98 | 1.00 | 123 |
+
+The two numpy back-ends run the same code, so the gap in ms/query between them is run-to-run variation.
+
 Answer quality (citing a relevant circular, declining out-of-scope questions, LLM-judged faithfulness) is
 measured by `scripts/eval_answers.py`, which has **not been run yet** because it needs a Gemini API key.
 No answer-quality numbers are claimed until it has.
 
 ## Run it
 
-Needs Python 3.12+ and, for answers, a Gemini API key.
+Needs Python 3.12+. A Gemini API key is optional: without one, `/ask` and the UI run **search only (no AI
+answer)** and return the best passages with their citations and links to the official PDFs.
 
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"     # .venv/bin/python on Linux/macOS
-cp .env.example .env                                # then set GEMINI_API_KEY
+cp .env.example .env                                # then set GEMINI_API_KEY for AI answers
 .venv/Scripts/python -m uvicorn niyam.api:app --port 8000
 ```
 
 Open http://localhost:8000 for the UI. The passages are committed (`data/processed/chunks.jsonl`), so
 search and answers work straight away; the first start embeds all passages with e5 and caches the result.
-To rebuild the data or get working PDF links:
+`NIYAM_INDEX=file` skips that: it loads the committed `data/index/e5-passages.npz` instead (rebuild it with
+`python scripts/export_index.py` after the passages change). PDF links open the CBIC portal unless the
+PDFs are downloaded. To rebuild the data or serve the PDFs locally:
 
 ```bash
 .venv/Scripts/python scripts/download_circulars.py  # 272 PDFs into data/raw/pdf/ (resumable, polite)
@@ -89,11 +118,16 @@ To rebuild the data or get working PDF links:
 | Endpoint | What it does |
 |---|---|
 | `GET /` | Web UI |
+| `GET /health` | `{"status": "ok", "mode": "answer"}`, or `"search_only"` without a key |
 | `GET /search?q=...&k=6` | Ranked passages with circular, date, pages and PDF link (no LLM needed) |
-| `POST /ask` `{"question": "...", "k": 6}` | SSE stream: `sources`, `token`…, `retry` if the self-check rejected the draft, `done` with cited passage numbers |
-| `GET /circulars/{id}/pdf` | The original circular PDF |
+| `POST /ask` `{"question": "...", "k": 6}` | SSE stream: `sources`, `token`…, `retry` if the self-check rejected the draft, `done` with cited passage numbers. Without a key: `sources` (each with `cbic_url`, the official PDF) and `done` with `"mode": "search_only"`, no tokens |
+| `GET /circulars/{id}/pdf` | The original circular PDF if downloaded, otherwise a redirect to it on the CBIC portal |
 
-With Docker (the image includes the model and embeddings; not deployed anywhere yet):
+Optional settings (environment or `.env`): `NIYAM_INDEX=file` as above; `NIYAM_ASK_RATE_LIMIT`, a per-client
+limit on `/ask` such as `10/minute,100/day` (429 with `Retry-After` when exceeded); `NIYAM_PRELOAD=1` to load
+the model at start-up instead of on the first request.
+
+With Docker (the image includes the model and embeddings):
 
 ```bash
 docker build -t niyam .
@@ -102,6 +136,34 @@ docker run -p 8000:8000 --env-file .env -v ./data/raw/pdf:/app/data/raw/pdf:ro n
 
 Postgres (optional, the pgvector path): `docker compose up -d`, then `python scripts/load_pg.py` and
 `python scripts/eval_retrieval.py --configs e5,pg-e5,pg-hybrid`.
+
+## Hugging Face Space
+
+[`space/`](space) is the whole Space: `README.md` (the Space's settings: Docker SDK, port 7860) and a
+`Dockerfile` that downloads this repository from GitHub at build time, bakes in the e5 model and serves the
+API and web UI from the exported index file (`NIYAM_INDEX=file`), search only until a key is added. The
+Space builds `main`, so merge changes first; set `NIYAM_REF` in the Dockerfile to pin a tag or commit.
+
+To publish it to an existing Space (git asks for your Hugging Face username and an access token with
+write access as the password):
+
+```bash
+git clone https://huggingface.co/spaces/jatinvats123/niyam niyam-space
+cd niyam-space
+git rm -q --ignore-unmatch index.html style.css   # the Static Space template's files
+cp ../niyam/space/README.md ../niyam/space/Dockerfile .
+git add README.md Dockerfile
+git commit -m "Run Niyam as a Docker Space"
+git push
+```
+
+- **Plan.** Hugging Face's docs (checked 22 Oct 2026) say Docker Spaces need a paid plan to create (PRO,
+  $9/month, for a personal account). The free "CPU basic" hardware it runs on, 2 vCPU and 16 GB RAM, has no
+  hourly cost.
+- **AI answers.** Add a `GEMINI_API_KEY` secret under Settings → Variables and secrets; the Space restarts
+  and `/ask` streams cited answers. `/ask` allows 10 questions a minute and 100 a day per visitor
+  (`NIYAM_ASK_RATE_LIMIT`, which a Space variable can override).
+- **Updates.** After merging new code, rebuild the Space (Settings → Factory rebuild).
 
 ## Use it from Claude Desktop or Cursor (MCP)
 
@@ -144,14 +206,16 @@ then the answer eval with an LLM faithfulness judge if the `GEMINI_API_KEY` secr
 |---|---|
 | `niyam/cbic.py` | Client for the CBIC Tax Information Portal API |
 | `niyam/ingest.py` | PDF text extraction, OCR fallback, paragraph chunking |
-| `niyam/search.py` | BM25, dense (e5, potion), RRF fusion, rerankers; `Retriever` is the production set-up |
+| `niyam/search.py` | BM25, dense (e5, potion), RRF fusion, rerankers, the index file; `Retriever` is the production set-up |
 | `niyam/store.py` | Postgres + pgvector schema, loading, vector and hybrid SQL |
 | `niyam/answer.py` | Grounded prompt, citation parsing, Gemini streaming |
 | `niyam/graph.py` | LangGraph flow: rewrite → retrieve → answer → self-check |
 | `niyam/api.py`, `niyam/static/` | FastAPI service and web UI |
 | `niyam/mcp_server.py` | MCP server |
-| `scripts/` | Download, chunking, Postgres load, retrieval and answer evals |
+| `scripts/` | Download, chunking, Postgres load, index export, retrieval and answer evals |
+| `data/index/e5-passages.npz` | Passages and their e5 vectors in one file, for `NIYAM_INDEX=file` |
 | `data/eval/questions.jsonl` | 50 hand-labelled questions (45 answerable, 5 out of scope) |
+| `space/` | Hugging Face Space: settings and Dockerfile |
 
 ## Limitations
 
@@ -165,5 +229,12 @@ then the answer eval with an LLM faithfulness judge if the `GEMINI_API_KEY` secr
 - **English source text.** 77 circulars also have Hindi PDFs that are not downloaded; Hindi questions rely
   on multilingual embeddings and the rewrite step.
 - **Not legal advice.** Answers point to the source; they don't replace a GST practitioner.
+- **Search only means no rewrite.** Without a key, Hindi and Hinglish questions are searched as typed.
+- **The rate limit is best-effort.** It counts per client address in memory and trusts `X-Forwarded-For`,
+  which a client can forge.
 
 Design decisions and trade-offs: [DESIGN.md](DESIGN.md). Build log: [PLAN.md](PLAN.md).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
